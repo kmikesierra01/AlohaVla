@@ -1,9 +1,10 @@
 """High-level planner for the colour-command task: SmolVLM2 (SmolVLA's own base VLM) lists the cube colours left to
-right from the close-up "zoom" camera, which turns "Pick up the red cube ..." into "Pick up the second cube ..." for
-the place-command SmolVLA policy (AlohaFourCubesSlot-v0).
+right from the top camera's first frame (the policy's own camera), which turns "Pick up the red cube ..." into
+"Pick up the second cube ..." for the place-command SmolVLA policy (AlohaFourCubesSlot-v0).
 
-Zero-shot SmolVLM2 gets the order right in only 5/10 scenes, so it is fine-tuned on simulator-labelled images
-(layout seeds 100000+, disjoint from the policy's training seeds 0-50 and the eval seeds 1000+).
+Zero-shot SmolVLM2 gets the order right in 0/10 scenes (cubes ~18 px wide), so it is fine-tuned on
+simulator-labelled images (layout seeds 100000+, disjoint from the policy's training seeds 0-50 and the eval seeds
+1000+).
 
 Usage: python planner.py train <out_dir> [n_images] [steps]
        python planner.py eval <model_dir|base> [from:to]      (default 1000:1200 = the 200 eval scenes)
@@ -23,19 +24,25 @@ COLORS = two_cubes.TASKS["AlohaFourCubes-v0"]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def view(pixels):
+    """Planner image from a top camera frame: the cubes' row (+y) runs bottom to top there, so turn it 90° clockwise
+    to read it left to right."""
+    return Image.fromarray(pixels).transpose(Image.Transpose.ROTATE_270)
+
+
 def scenes(seeds):
-    """(zoom image, colours left to right) per layout; the zoom image's width runs along +y."""
-    env = two_cubes.TwoCubesEnv(COLORS, True, task="two_cubes", obs_type="pixels_agent_pos")
+    """(planner image, colours left to right) per layout."""
+    env = two_cubes.TwoCubesEnv(COLORS, task="two_cubes", obs_type="pixels_agent_pos")
     for seed in seeds:
         poses, _ = two_cubes.sample(seed, COLORS)
-        yield Image.fromarray(env.reset(seed=seed)[0]["pixels"]["zoom"]), sorted(poses, key=lambda c: poses[c][1])
+        yield view(env.reset(seed=seed)[0]["pixels"]["top"]), sorted(poses, key=lambda c: poses[c][1])
 
 
 def load(path, dtype=torch.bfloat16):
     from transformers import AutoModelForImageTextToText, AutoProcessor
 
     proc = AutoProcessor.from_pretrained(BASE)
-    proc.image_processor.do_image_splitting = False  # one 512 px view (cubes ~120 px apart in it)
+    proc.image_processor.do_image_splitting = False  # one 512 px view
     proc.tokenizer.padding_side = "right"
     return proc, AutoModelForImageTextToText.from_pretrained(path, dtype=dtype).to(DEVICE)
 
@@ -67,7 +74,9 @@ def train(out, n=2000, steps=500, batch=8, lr=1e-5):
     model.train()
     for step in range(steps):
         items = [data[i] for i in rng.choice(n, batch, replace=False)]
-        full = proc(text=[prompt(proc, ", ".join(order)) for _, order in items], images=[[img] for img, _ in items],
+        # our orange renders yellowish and the base VLM calls it yellow: teach that name, read_order maps it back
+        full = proc(text=[prompt(proc, ", ".join(order).replace("orange", "yellow")) for _, order in items],
+                    images=[[img] for img, _ in items],
                     return_tensors="pt", padding=True).to(DEVICE)
         start = proc(text=[prompt(proc)], images=[[items[0][0]]], return_tensors="pt")["input_ids"].shape[1]
         labels = full["input_ids"].clone()

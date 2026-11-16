@@ -51,7 +51,7 @@ EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=outputs/planner bash run.sh view $CKPT
 |------|------|
 | 로봇 | ALOHA 양팔 (ViperX 300 ×2, 14 joint), gym-aloha MuJoCo 시뮬레이션 |
 | 작업 | 4색 큐브(빨강·파랑·주황·초록) 중 명령한 색을 오른팔로 집어 왼팔에 전달 |
-| 상위 계획기 | SmolVLM2-500M: 근접 카메라 첫 프레임 → 색 순서 → 위치 명령 |
+| 상위 계획기 | SmolVLM2-500M: top 카메라 첫 프레임 → 색 순서 → 위치 명령 |
 | 하위 정책 | SmolVLA (450M): top 카메라 + 관절 + 위치 명령 → 관절 목표 (50 step 단위) |
 | 학습 데이터 | 스크립트 시연 200개, 계획기용 자동 라벨 이미지 2,000장 |
 | 평가 | 학습에 없던 장면 200개, 500 step 제한 |
@@ -63,10 +63,11 @@ EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=outputs/planner bash run.sh view $CKPT
 | 방식 | 성공률 (200회) |
 |------|----------------|
 | SmolVLA 단일 정책 (색 명령으로 학습) | 14.5% |
-| **계획기 + SmolVLA** | **94.0%** (95% CI 89.8–96.5%) |
+| **계획기 + SmolVLA** | **99.0%** (95% CI 96.4–99.7%) |
 
 - 성공: 왼팔이 명령한 큐브를 혼자 0.5초 이상 들고 있음
-- 계획기 정확도 94.0%, 하위 정책 단독(위치 명령) 100%
+- 계획기 정확도(명령한 큐브의 위치) 99.5%, 하위 정책 단독(위치 명령) 100%
+- 주황 큐브는 화면에서 노란빛이라 계획기 정답을 "yellow"로 학습 ("orange"로 학습하면 95.0%)
 
 ---
 
@@ -75,7 +76,7 @@ EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=outputs/planner bash run.sh view $CKPT
 ```mermaid
 flowchart LR
     CMD["색 명령<br/>Pick up the red cube"] --> PLAN["상위 계획기<br/>SmolVLM2"]
-    ZOOM["근접 카메라<br/>첫 프레임"] --> PLAN
+    TOP -->|"첫 프레임"| PLAN
     PLAN -->|"Pick up the second cube"| POL["하위 정책<br/>SmolVLA"]
     TOP["top 카메라"] --> POL
     JS["관절 14개"] --> POL
@@ -99,10 +100,10 @@ flowchart LR
 | | 하위 정책 | 상위 계획기 |
 |------|------|------|
 | 모델 | `lerobot/smolvla_base` (450M) | `SmolVLM2-500M-Video-Instruct` |
-| 데이터 | 스크립트 시연 200개 (같은 배치 × 4색) | 근접 화면 2,000장 + 정답 색 순서 (자동 라벨) |
-| 학습 범위 | VLM 고정, action expert만 | 비전 인코더 고정, 언어 모델 |
+| 데이터 | 스크립트 시연 200개 (같은 배치 × 4색) | top 화면 2,000장 + 정답 색 순서 (자동 라벨) |
+| 학습 범위 | VLM 파트 고정, 동작 파트(action expert)만 학습 | 비전 인코더 고정, 언어 모델 학습 |
 | 설정 | 20k step, batch 32 | 500 step, batch 8, lr 1e-5 |
-| 시간 (RTX 4070 SUPER) | 약 2.5시간 (중간 평가 포함) | 약 1시간 |
+| 시간 (RTX 4070 SUPER) | 약 2.5시간 (중간 평가 포함) | 약 10분 |
 
 시연: 엔드이펙터 웨이포인트 스크립트 → 관절 궤적 → 정책 환경에서 재생하며 기록 (ACT 시뮬레이션 데이터 방식).
 
@@ -115,7 +116,7 @@ flowchart LR
 ├── two_cubes.py    # 4색 큐브 환경·보상, 스크립트 시연, 계획기 연결, 분석
 ├── planner.py      # 상위 계획기 학습·평가
 ├── view.py         # MuJoCo 뷰어 + 명령 입력
-├── stats.py        # 성공률 95% CI, 같은 seed 비교 (McNemar)
+├── stats.py        # 성공률 95% CI, 같은 seed 비교
 ├── setup.sh        # WSL 환경 설치
 └── docs/images/
 ```

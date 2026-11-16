@@ -14,7 +14,7 @@ DATASET=${DATASET:-lerobot/aloha_sim_transfer_cube_human}
 POLICY=${POLICY:-act}   # POLICY=smolvla run.sh train ... fine-tunes lerobot/smolvla_base instead of training ACT from scratch
 # smolvla_base was pretrained with 3 SO-100 cameras (camera1..3): ALOHA's one top camera goes in as camera1, the
 # other two are left out (empty_cameras=0). Needed at eval too: lerobot-eval otherwise overrides the saved map with {}.
-RENAME='{"observation.images.top":"observation.images.camera1","observation.images.zoom":"observation.images.camera2"}'
+RENAME='{"observation.images.top":"observation.images.camera1"}'
 
 # lerobot-train / lerobot-eval, but the env hands the policy the dataset's language command. gym-aloha only has
 # env.task ("transfer_cube"), which lerobot would feed SmolVLA instead of the sentence it was trained on. ACT ignores it.
@@ -79,7 +79,7 @@ train)  # [POLICY=smolvla] train [steps] [every] [batch] [--lerobot.args ...]: c
     --eval.n_episodes=50 --eval.batch_size=1 \
     --output_dir=$OUT "${@:5}" 2>&1 | tee $OUT.log   # log keeps the per-checkpoint pc_success after the terminal closes
   ;;
-record)  # record [n] [repo_id] [paired] [red,blue,orange,green] [zoom]: scripted coloured-cube demos -> local LeRobot dataset (~10 s each)
+record)  # record [n] [repo_id] [paired] [red,blue,orange,green] [slot]: scripted coloured-cube demos -> local LeRobot dataset (~10 s each)
   python two_cubes.py record ${2:-100} ${3:-local/aloha_sim_two_cubes} "${@:4}"
   ;;
 view)  # live MuJoCo window; default = latest own ACT checkpoint, or pass a model dir (SmolVLA: type commands in the terminal)

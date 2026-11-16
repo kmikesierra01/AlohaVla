@@ -3,7 +3,7 @@
 AlohaTwoCubes-v0: red + blue, mirrored about the right arm's line (y = 0.5). AlohaFourCubes-v0: red, blue, orange,
 green on an arc around the right arm's base. Either way every cube is equally far from the right arm, the colour order
 is random and the commanded colour is drawn independently, so only the command tells the policy which cube to take
-(ignoring it gets 1/n right). AlohaFourCubesZoom-v0: the four cubes plus a close-up camera over them ("zoom").
+(ignoring it gets 1/n right).
 AlohaFourCubesSlot-v0: the four cubes, but the command names the cube's place ("the second cube"), not its colour.
 AlohaFourCubesPlan-v0: colour commands for a place-command policy; planner.py turns them into place commands.
 Importing this module registers them (gym-aloha's transfer-cube scene and stages).
@@ -14,8 +14,8 @@ Reward, as lerobot-eval's max_reward reports it:
   10+s   the right arm lifted ANOTHER cube first (s = that cube's stage), i.e. wrong colour
 
 Usage (colours: red,blue = two cubes, default; red,blue,orange,green = four cubes):
-       python two_cubes.py record <n_demos> <repo_id> [paired] [colours] [zoom] [slot]  (scripted demos -> LeRobot
-                dataset; paired: each layout once per colour; zoom: + close-up camera; slot: commands by place)
+       python two_cubes.py record <n_demos> <repo_id> [paired] [colours] [slot]  (scripted demos -> LeRobot dataset;
+                paired: each layout once per colour; slot: commands by place)
        python two_cubes.py preview <seed> <out.mp4> [colours]   (one layout, a demo per colour, top | side camera)
        python two_cubes.py breakdown <eval_dir> [colours]       (right-colour rate by command and cube position)
        python two_cubes.py probe <checkpoint> <seed|from:to>  (does the command decide where the arm goes?
@@ -39,10 +39,8 @@ from gym_aloha.tasks.sim_end_effector import BimanualViperXEndEffectorTask
 
 RGBA = {"red": "1 0 0 1", "blue": "0 0 1 1", "orange": "1 0.5 0 1", "green": "0 0.7 0 1"}
 TASKS = {"AlohaTwoCubes-v0": ("red", "blue"), "AlohaFourCubes-v0": ("red", "blue", "orange", "green"),
-         "AlohaFourCubesZoom-v0": ("red", "blue", "orange", "green"),
          "AlohaFourCubesSlot-v0": ("red", "blue", "orange", "green"),
          "AlohaFourCubesPlan-v0": ("red", "blue", "orange", "green")}
-ZOOM = {"AlohaFourCubesZoom-v0"}  # tasks that add the close-up "zoom" camera to the top one
 SLOT = {"AlohaFourCubesSlot-v0"}  # tasks whose command names the cube's place ("the second cube"), not its colour
 PLAN = {"AlohaFourCubesPlan-v0"}  # colour commands, turned into place commands by planner.py (PLANNER=<model dir>)
 ORDINALS = ("first", "second", "third", "fourth")  # places counted along +y
@@ -63,10 +61,6 @@ def make_physics(colors=COLORS, ee=False):
     # ACT's soft mocap weld can't drag the arm (joint frictionloss 50-60) down to the cube on MuJoCo 3: 0/6 grasps.
     # MuJoCo's default stiffness: 6/6. Only the scripted end-effector env has the weld; the policy env is unchanged.
     xml = xml.replace('solimp=".25 .25 0.001"', 'solimp="0.9 0.95 0.001"')
-    # close-up camera straight down on the cubes' arc (image width along y). In "top" the four cubes are ~30 px apart
-    # at SmolVLA's 512 px input, so they share one or two of the VLM's 64 px image tokens; here ~115 px.
-    xml = xml.replace("<worldbody>", '<worldbody><camera name="zoom" pos="0.14 0.5 0.45" xyaxes="0 1 0 -1 0 0" '
-                                     'fovy="40"/>', 1)
     assets = {p.name: p.read_bytes() for p in ASSETS_DIR.iterdir() if p.is_file()}
     return mujoco.Physics.from_xml_string(xml, assets=assets)
 
@@ -96,14 +90,13 @@ _planner = None
 
 
 def plan(physics, text):
-    """Colour command -> place command, read off the zoom camera by planner.py's VLM (unchanged if it can't)."""
+    """Colour command -> place command, read off the top camera by planner.py's VLM (unchanged if it can't)."""
     global _planner
     import planner
-    from PIL import Image
 
     if _planner is None:
         _planner = planner.load(os.environ["PLANNER"])
-    order = planner.read_order(*_planner, Image.fromarray(physics.render(height=480, width=640, camera_id="zoom")))
+    order = planner.read_order(*_planner, planner.view(physics.render(height=480, width=640, camera_id="top")))
     color = next((c for c in RGBA if c in text.lower()), None)
     return COMMAND.format(ORDINALS[order.index(color)]) if color in order[:len(ORDINALS)] else text
 
@@ -151,8 +144,6 @@ class Cubes:
 
 
 class TwoCubesTask(Cubes, TransferCubeTask):
-    zoom = False
-
     def initialize_episode(self, physics):
         physics.named.data.qpos[:16] = START_ARM_POSE
         np.copyto(physics.data.ctrl, START_ARM_POSE)
@@ -162,7 +153,7 @@ class TwoCubesTask(Cubes, TransferCubeTask):
     def get_observation(self, physics):  # only the top camera: the policy sees nothing else (3x faster than gym-aloha)
         obs = collections.OrderedDict(qpos=self.get_qpos(physics), qvel=self.get_qvel(physics))
         obs["env_state"] = self.get_env_state(physics)
-        obs["images"] = {c: physics.render(height=480, width=640, camera_id=c) for c in ("top", "zoom")[:1 + self.zoom]}
+        obs["images"] = {"top": physics.render(height=480, width=640, camera_id="top")}
         return obs
 
 
@@ -186,23 +177,12 @@ class TwoCubesEnv(AlohaEnv):
     command = None  # view.py / record() set one: it is fed to the policy and its colour becomes the target
     planned = None  # plan tasks: the place command the planner made of it at reset
 
-    def __init__(self, colors=COLORS, zoom=False, slot=False, plan=False, **kwargs):
-        self.colors, self.zoom, self.slot, self.plan = tuple(colors), zoom, slot, plan
+    def __init__(self, colors=COLORS, slot=False, plan=False, **kwargs):
+        self.colors, self.slot, self.plan = tuple(colors), slot, plan
         super().__init__(**kwargs)
-        if zoom:  # same image shape as "top"
-            pixels = self.observation_space["pixels"] if "pixels" in self.observation_space.spaces else self.observation_space
-            pixels.spaces["zoom"] = pixels["top"]
 
     def _make_env_task(self, task_name):
-        task = TwoCubesTask(self.colors)
-        task.zoom = self.zoom
-        return make_control_env(make_physics(self.colors), task)
-
-    def _format_raw_obs(self, raw_obs):
-        obs = super()._format_raw_obs(raw_obs)
-        if self.zoom:
-            (obs["pixels"] if "pixels" in obs else obs)["zoom"] = raw_obs["images"]["zoom"].copy()
-        return obs
+        return make_control_env(make_physics(self.colors), TwoCubesTask(self.colors))
 
     def reset(self, seed=None, options=None):
         gym.Env.reset(self, seed=seed)
@@ -254,22 +234,8 @@ if os.environ.get("FOCUS"):  # FOCUS=50 run.sh train ...: draw each episode's fi
 
 for _id, _colors in TASKS.items():
     gym.register(id=f"gym_aloha/{_id}", entry_point=TwoCubesEnv, max_episode_steps=400, nondeterministic=True,
-                 kwargs={"obs_type": "pixels", "task": "two_cubes", "colors": _colors, "zoom": _id in ZOOM,
-                         "slot": _id in SLOT, "plan": _id in PLAN})
-
-
-def _zoom_features(post_init):  # lerobot's aloha env config only knows the "top" camera
-    def __post_init__(self):
-        post_init(self)
-        if self.task in ZOOM and "pixels/top" in self.features:
-            self.features["pixels/zoom"] = self.features["pixels/top"]
-            self.features_map["pixels/zoom"] = "observation.images.zoom"
-    return __post_init__
-
-
-from lerobot.envs.configs import AlohaEnv as _AlohaEnvConfig  # noqa: E402
-
-_AlohaEnvConfig.__post_init__ = _zoom_features(_AlohaEnvConfig.__post_init__)
+                 kwargs={"obs_type": "pixels", "task": "two_cubes", "colors": _colors, "slot": _id in SLOT,
+                         "plan": _id in PLAN})
 
 
 PICK = [np.cos(np.pi / 4), 0, -np.sin(np.pi / 4), 0]  # right gripper pointing straight down: grasps from above
@@ -351,23 +317,21 @@ def preview(seed, out, colors=COLORS):
     print(f"-> {out}")
 
 
-def record(n, repo_id, paired=False, colors=COLORS, zoom=False, slot=False):
+def record(n, repo_id, paired=False, colors=COLORS, slot=False):
     """ACT's sim recipe: end-effector waypoints -> joint trajectory -> replay it in the joint-space env (the one the
     policy is evaluated in) to record camera + state. Keeps a demo only if the left gripper still holds the
     commanded cube alone at the last step (no drop); n / len(colors) demos per colour.
     paired: every layout twice, once per colour (kept only if both work), so the image alone never tells which cube
     to take: without it each layout had one answer and the policy learned to pick by position, not by command.
-    zoom: also record the close-up "zoom" camera. slot: commands name the cube's place, not its colour."""
+    slot: commands name the cube's place, not its colour."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     motors = {"dtype": "float32", "shape": (14,), "names": {"motors": JOINTS}}
-    cams = ("top", "zoom")[:1 + zoom]
     ds = LeRobotDataset.create(repo_id, fps=50, robot_type="aloha", features={
-        **{f"observation.images.{c}": {"dtype": "video", "shape": (480, 640, 3), "names": ["height", "width", "channel"]}
-           for c in cams},
+        "observation.images.top": {"dtype": "video", "shape": (480, 640, 3), "names": ["height", "width", "channel"]},
         "observation.state": motors, "action": motors})
     ee = make_control_env(make_physics(colors, ee=True), TwoCubesEETask(colors))
-    env = TwoCubesEnv(colors, zoom, task="two_cubes", obs_type="pixels_agent_pos")
+    env = TwoCubesEnv(colors, task="two_cubes", obs_type="pixels_agent_pos")
     seed, kept, count = 0, 0, collections.Counter()
     while kept < n:
         assert seed < 2 * n + 10, f"scripted demos keep failing ({kept}/{seed} kept)"
@@ -382,7 +346,7 @@ def record(n, repo_id, paired=False, colors=COLORS, zoom=False, slot=False):
             obs, _ = env.reset(seed=seed)
             frames = []
             for a in joints:
-                frames.append(({f"observation.images.{c}": obs["pixels"][c] for c in cams},
+                frames.append(({"observation.images.top": obs["pixels"]["top"]},
                                obs["agent_pos"].astype(np.float32), a.astype(np.float32)))
                 obs, reward, *_ = env.step(a)
             print(f"seed {seed} {target}: final reward {reward}", flush=True)
@@ -471,9 +435,9 @@ def probe(checkpoint, seeds, noises=8):
 
 
 def demo(checkpoint, seed, out):
-    """One scene, one policy episode per colour command, back to back: top camera (what the policy sees) | close-up
-    (what plan tasks' planner sees), with the command and the planner's place command. Task: EVAL_TASK, else the
-    checkpoint's (EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=<dir> for the two-stage system)."""
+    """One scene, one policy episode per colour command, back to back: the top camera (what the policy and the planner
+    see), with the command and the planner's place command. Task: EVAL_TASK, else the checkpoint's
+    (EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=<dir> for the two-stage system)."""
     import json
     from pathlib import Path
 
@@ -498,8 +462,8 @@ def demo(checkpoint, seed, out):
         if len(frames) == start:
             plans.append(u.planned)  # the episode's; the vector env's auto-reset at the end plans a new scene
         p = u._env.physics
-        img = Image.fromarray(np.concatenate([p.render(height=480, width=640, camera_id=c) for c in ("top", "zoom")], 1))
-        text = f"seed {seed}  t={len(frames) - start}  command: {u.command}" + (f"  -> planner: {u.planned}" if u.plan else "")
+        img = Image.fromarray(p.render(height=480, width=640, camera_id="top"))
+        text = f"seed {seed}  t={len(frames) - start}  command: {u.command}" + (f"\n-> planner: {u.planned}" if u.plan else "")
         ImageDraw.Draw(img).text((8, 8), text, fill="white")
         frames.append(np.asarray(img))
 
@@ -515,8 +479,7 @@ def demo(checkpoint, seed, out):
 
 if __name__ == "__main__":
     cols = next((tuple(a.split(",")) for a in sys.argv[2:] if "," in a), COLORS)
-    {"record": lambda: record(int(sys.argv[2]), sys.argv[3], "paired" in sys.argv[4:], cols, "zoom" in sys.argv[4:],
-                              "slot" in sys.argv[4:]),
+    {"record": lambda: record(int(sys.argv[2]), sys.argv[3], "paired" in sys.argv[4:], cols, "slot" in sys.argv[4:]),
      "preview": lambda: preview(int(sys.argv[2]), sys.argv[3], cols),
      "breakdown": lambda: breakdown(sys.argv[2], cols),
      "probe": lambda: probe(sys.argv[2], range(*map(int, sys.argv[3].split(":"))) if ":" in sys.argv[3]

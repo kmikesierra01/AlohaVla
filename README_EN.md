@@ -51,7 +51,7 @@ EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=outputs/planner bash run.sh view $CKPT
 |------|-------------|
 | Robot | ALOHA bimanual (2 × ViperX 300, 14 joints), gym-aloha MuJoCo simulation |
 | Task | Of four cubes (red, blue, orange, green), pick the commanded one with the right arm and hand it to the left |
-| High-level planner | SmolVLM2-500M: first close-up camera frame → colour order → place command |
+| High-level planner | SmolVLM2-500M: first top camera frame → colour order → place command |
 | Low-level policy | SmolVLA (450M): top camera + joints + place command → joint targets (50-step chunks) |
 | Training data | 200 scripted demos, 2,000 auto-labelled images for the planner |
 | Evaluation | 200 unseen layouts, 500-step limit |
@@ -63,10 +63,11 @@ EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=outputs/planner bash run.sh view $CKPT
 | Method | Success (200 episodes) |
 |--------|------------------------|
 | Single SmolVLA policy (trained on colour commands) | 14.5% |
-| **Planner + SmolVLA** | **94.0%** (95% CI 89.8–96.5%) |
+| **Planner + SmolVLA** | **99.0%** (95% CI 96.4–99.7%) |
 
 - Success: the left gripper alone holds the commanded cube for 0.5 s
-- Planner accuracy 94.0%, low-level policy alone (place commands) 100%
+- Planner accuracy (commanded cube's place) 99.5%, low-level policy alone (place commands) 100%
+- The orange cube renders yellowish, so the planner is trained to call it "yellow" (trained on "orange": 95.0%)
 
 ---
 
@@ -75,7 +76,7 @@ EVAL_TASK=AlohaFourCubesPlan-v0 PLANNER=outputs/planner bash run.sh view $CKPT
 ```mermaid
 flowchart LR
     CMD["Colour command<br/>Pick up the red cube"] --> PLAN["High-level planner<br/>SmolVLM2"]
-    ZOOM["Close-up camera<br/>first frame"] --> PLAN
+    TOP -->|"First frame"| PLAN
     PLAN -->|"Pick up the second cube"| POL["Low-level policy<br/>SmolVLA"]
     TOP["Top camera"] --> POL
     JS["14 joints"] --> POL
@@ -99,10 +100,10 @@ The two models are linked by one sentence: the planner's place command is the po
 | | Low-level policy | High-level planner |
 |------|------|------|
 | Model | `lerobot/smolvla_base` (450M) | `SmolVLM2-500M-Video-Instruct` |
-| Data | 200 scripted demos (same layout × 4 colours) | 2,000 close-up images + true colour order (auto-labelled) |
-| Trained | Action expert only, VLM frozen | Language model, vision encoder frozen |
+| Data | 200 scripted demos (same layout × 4 colours) | 2,000 top camera images + true colour order (auto-labelled) |
+| Trained | Action expert only, VLM part frozen | Language model, vision encoder frozen |
 | Settings | 20k steps, batch 32 | 500 steps, batch 8, lr 1e-5 |
-| Time (RTX 4070 SUPER) | ~2.5 h (incl. periodic evals) | ~1 h |
+| Time (RTX 4070 SUPER) | ~2.5 h (incl. periodic evals) | ~10 min |
 
 Demos: end-effector waypoint script → joint trajectory → replayed and recorded in the policy's environment (ACT's sim data recipe).
 
@@ -115,7 +116,7 @@ Demos: end-effector waypoint script → joint trajectory → replayed and record
 ├── two_cubes.py    # four-cube env and reward, scripted demos, planner hook, analysis
 ├── planner.py      # high-level planner training and evaluation
 ├── view.py         # MuJoCo viewer + command input
-├── stats.py        # success 95% CI, same-seed comparison (McNemar)
+├── stats.py        # success 95% CI, same-seed comparison
 ├── setup.sh        # WSL environment setup
 └── docs/images/
 ```
